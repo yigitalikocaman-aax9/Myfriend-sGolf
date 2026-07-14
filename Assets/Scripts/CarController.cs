@@ -1,20 +1,23 @@
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(Rigidbody))]
 public class CarController : MonoBehaviour
 {
-    [Header("Wheel Colliders")]
+    [Header("Wheel Colliders (fizik - gorunmez)")]
     public WheelCollider wheelFL;
     public WheelCollider wheelFR;
     public WheelCollider wheelRL;
     public WheelCollider wheelRR;
 
-    [Header("Wheel Meshes (visual rims, optional)")]
+    [Header("Wheel Pivots (Hiyerarşideki PivotFL, PivotFR vb.)")]
     public Transform wheelMeshFL;
     public Transform wheelMeshFR;
     public Transform wheelMeshRL;
     public Transform wheelMeshRR;
+
+    [Header("Araba Gövdesi Ayarı (Arabayı Kaldırmak İçin)")]
+    public Transform[] carPartsToRaise;
+    public float carBodyHeightOffset = 0f;
 
     [Header("Settings")]
     public float motorForce = 1500f;
@@ -22,66 +25,62 @@ public class CarController : MonoBehaviour
     public float maxSteerAngle = 30f;
 
     [Header("Steering Feel (donusu iyilestirir)")]
-    [Tooltip("Direksiyonun hedef acisina ulasma hizi. Dusuk = yumusak/tembel, Yuksek = ani/sert")]
     public float steerSpeed = 5f;
-    [Tooltip("Hizlandikca direksiyon hassasiyeti dusurulur mu (gercekci his icin onerilir)")]
     public bool reduceSteerAtSpeed = true;
-    [Tooltip("Bu hizin (km/s) uzerinde direksiyon en dusuk hassasiyete iner")]
     public float speedForMinSteer = 100f;
-    [Tooltip("Yuksek hizda direksiyon acisinin carpani (orn 0.4 = %40'ina iner)")]
     [Range(0.1f, 1f)]
     public float minSteerMultiplier = 0.4f;
 
-    [Header("Controls")]
-    [Tooltip("W/S ters calisiyorsa bunu isaretle")]
-    public bool invertThrottle = false;
-    [Tooltip("A/D ters calisiyorsa bunu isaretle")]
-    public bool invertSteer = false;
-
-    [Header("Drivetrain")]
-    public bool frontWheelDrive = true;
-    public bool rearWheelDrive = true;
-
-    [Header("Center of Mass (important for stability)")]
-    public Vector3 centerOfMassOffset = new Vector3(0, -0.5f, 0);
-
-    [Header("Tire Grip (kayma hissini azaltmak icin)")]
+    [Header("Tire Grip")]
     public float forwardFrictionStiffness = 1.5f;
     public float sidewaysFrictionStiffness = 1.5f;
 
-    [Header("Brake Light Status (read-only, for other scripts)")]
-    [Tooltip("True whenever the brake lights should be lit: Space is held, or S is pressed while the car still moves forward")]
+    [Header("Brake Light Status (read-only)")]
     public bool isBraking;
-    public enum Gear
-{
-    Drive,
-    Reverse
-}
 
-[Header("Transmission")]
-public Gear currentGear = Gear.Drive;
+    public enum Gear { Drive, Reverse }
+    [Header("Transmission")]
+    public Gear currentGear = Gear.Drive;
+
+    [Header("Model Açı Düzeltmesi")]
+    public Vector3 meshRotationOffset = new Vector3(0, 90, 0);
+    [Header("Model Yükseklik Düzeltmesi")]
+    public Vector3 meshPositionOffset = new Vector3(0, 0, 0);
+    [Header("Collider Pozisyon Düzeltmesi")]
+    public Vector3 colliderPositionOffset = new Vector3(0, 0, 0);
+
+    // Mobil Arayüzden Tetiklenecek Giriş Değerleri
+    private float throttleInput; // Gaz pedalından gelecek (0 ile 1 arası)
+    private float steerInput;    // Direksiyondan gelecek (-1 ile 1 arası)
+    private bool isHoldingBrake; // Fren pedalından gelecek (true/false)
 
     private Rigidbody rb;
-    private float throttleInput;
-    private float steerInput;
-    private bool brakeInput;
     private float currentSteerAngle;
+    private Vector3[] originalBodyLocalPositions;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
-        rb.centerOfMass = centerOfMassOffset;
-
+        
         ApplyFrictionSettings(wheelFL);
         ApplyFrictionSettings(wheelFR);
         ApplyFrictionSettings(wheelRL);
         ApplyFrictionSettings(wheelRR);
+
+        if (carPartsToRaise != null && carPartsToRaise.Length > 0)
+        {
+            originalBodyLocalPositions = new Vector3[carPartsToRaise.Length];
+            for (int i = 0; i < carPartsToRaise.Length; i++)
+            {
+                if (carPartsToRaise[i] != null)
+                    originalBodyLocalPositions[i] = carPartsToRaise[i].localPosition;
+            }
+        }
     }
 
     void ApplyFrictionSettings(WheelCollider wc)
     {
         if (wc == null) return;
-
         WheelFrictionCurve forward = wc.forwardFriction;
         forward.stiffness = forwardFrictionStiffness;
         wc.forwardFriction = forward;
@@ -91,65 +90,51 @@ public Gear currentGear = Gear.Drive;
         wc.sidewaysFriction = sideways;
     }
 
-    void Update()
+    // --- MOBİL BUTONLARIN TETİKLEYECEĞİ FONKSİYONLAR (Dışarıdan çağrılacak) ---
+    
+    // Gaz pedalına basıldığında (value = 1), bırakıldığında (value = 0)
+    public void SetThrottleInput(float value)
     {
-        ReadInput();
-        UpdateWheelMeshes();
+        throttleInput = value;
     }
 
-    void ReadInput()
-{
-    var keyboard = Keyboard.current;
-    if (keyboard == null) return;
-
-    if (keyboard.rKey.wasPressedThisFrame)
-{
-    float speed = rb.linearVelocity.magnitude * 3.6f; // km/h
-
-    if (speed < 2f)
+    // Direksiyon döndürüldüğünde (-1 tam sol, 1 tam sağ)
+    public void SetSteerInput(float value)
     {
-        currentGear = currentGear == Gear.Drive
-            ? Gear.Reverse
-            : Gear.Drive;
+        steerInput = value;
     }
-    Debug.Log("Gear Changed: " + currentGear);
-}
 
-    float horizontal = 0f;
-
-    if (keyboard.dKey.isPressed)
-        horizontal += 1;
-
-    if (keyboard.aKey.isPressed)
-        horizontal -= 1;
-
-    steerInput = invertSteer ? -horizontal : horizontal;
-
-    brakeInput = keyboard.spaceKey.isPressed;
-
-    throttleInput = 0;
-
-    if (currentGear == Gear.Drive)
+    // Fren pedalına basıldığında (state = true), bırakıldığında (state = false)
+    public void SetBrakeInput(bool state)
     {
-        if (keyboard.wKey.isPressed)
-            throttleInput = 1;
-
-        if (keyboard.sKey.isPressed)
-            throttleInput = 0;
+        isHoldingBrake = state;
     }
-    else
+
+    // Vites butonuna her basıldığında D ve R arasında geçiş yapar
+    public void ToggleGear()
     {
-        if (keyboard.sKey.isPressed)
-            throttleInput = -1;
-
-        if (keyboard.wKey.isPressed)
-            throttleInput = 0;
+        float speed = rb.linearVelocity.magnitude * 3.6f;
+        if (speed < 5f) // Araba durmaya yakınken vites değişsin
+        {
+            currentGear = currentGear == Gear.Drive ? Gear.Reverse : Gear.Drive;
+            Debug.Log("Yeni Vites: " + currentGear);
+        }
     }
-}
 
     void FixedUpdate()
     {
-        // Hiza gore direksiyon hassasiyetini ayarla
+        ApplySteering();
+        ApplyMotorTorque();
+        ApplyBrakes();
+        
+        isBraking = isHoldingBrake; // Fren lambası durumu
+
+        SyncAllWheelMeshes();
+        UpdateCarBodyHeight();
+    }
+
+    void ApplySteering()
+    {
         float steerMultiplier = 1f;
         if (reduceSteerAtSpeed)
         {
@@ -159,86 +144,74 @@ public Gear currentGear = Gear.Drive;
         }
 
         float targetSteerAngle = steerInput * maxSteerAngle * steerMultiplier;
-
-        // Direksiyonu aninda degil, yumusak bir gecisle hedef aciya getir
         currentSteerAngle = Mathf.Lerp(currentSteerAngle, targetSteerAngle, steerSpeed * Time.fixedDeltaTime);
 
         wheelFL.steerAngle = currentSteerAngle;
         wheelFR.steerAngle = currentSteerAngle;
-
-        float appliedMotorTorque = throttleInput * -motorForce;
-
-        if (frontWheelDrive)
-        {
-            wheelFL.motorTorque = appliedMotorTorque;
-            wheelFR.motorTorque = appliedMotorTorque;
-        }
-
-        if (rearWheelDrive)
-        {
-            wheelRL.motorTorque = appliedMotorTorque;
-            wheelRR.motorTorque = appliedMotorTorque;
-        }
-
-        float appliedBrakeForce = 0f;
-
-if (brakeInput)
-{
-    appliedBrakeForce = brakeForce; // Space = el freni
-}
-else
-{
-    if (currentGear == Gear.Drive && Keyboard.current.sKey.isPressed)
-    {
-        appliedBrakeForce = brakeForce;
     }
 
-    if (currentGear == Gear.Reverse && Keyboard.current.wKey.isPressed)
+    void ApplyMotorTorque()
     {
-        appliedBrakeForce = brakeForce;
+        // Gaz inputunu vites durumuna göre yönlendiriyoruz
+        float gearMultiplier = (currentGear == Gear.Drive) ? -1f : 1f;
+        float appliedMotorTorque = throttleInput * motorForce * gearMultiplier;
+
+        // Eğer frene basılıyorsa gaza basılsa bile motor torkunu sıfırla (güvenlik için)
+        if (isHoldingBrake) appliedMotorTorque = 0f;
+
+        wheelFL.motorTorque = appliedMotorTorque;
+        wheelFR.motorTorque = appliedMotorTorque;
+        wheelRL.motorTorque = appliedMotorTorque;
+        wheelRR.motorTorque = appliedMotorTorque;
     }
-}
+
+    void ApplyBrakes()
+    {
+        // UI butonundan gelen fren komutuna göre fren kuvveti uygula
+        float appliedBrakeForce = isHoldingBrake ? brakeForce : 0f;
+
         wheelFL.brakeTorque = appliedBrakeForce;
         wheelFR.brakeTorque = appliedBrakeForce;
         wheelRL.brakeTorque = appliedBrakeForce;
         wheelRR.brakeTorque = appliedBrakeForce;
-
-        // Brake lights should light up when the handbrake (Space) is held,
-        // or when the player presses the "backward" input while the car is still moving forward
-        // (i.e. actively slowing down rather than reversing from a standstill)
-        float forwardSpeed = Vector3.Dot(rb.linearVelocity, transform.forward);
-
-        bool keyboardBrake = false;
-
-        if (currentGear == Gear.Drive)
-        {
-          keyboardBrake = Keyboard.current.sKey.isPressed;
-        }
-        else
-        {
-          keyboardBrake = Keyboard.current.wKey.isPressed;
-        }
-
-        isBraking = brakeInput || keyboardBrake;
     }
 
-    void UpdateWheelMeshes()
+    void SyncAllWheelMeshes()
     {
-        UpdateWheelPose(wheelFL, wheelMeshFL);
-        UpdateWheelPose(wheelFR, wheelMeshFR);
-        UpdateWheelPose(wheelRL, wheelMeshRL);
-        UpdateWheelPose(wheelRR, wheelMeshRR);
+        SyncWheelMesh(wheelFL, wheelMeshFL, true);
+        SyncWheelMesh(wheelFR, wheelMeshFR, false);
+        SyncWheelMesh(wheelRL, wheelMeshRL, true);
+        SyncWheelMesh(wheelRR, wheelMeshRR, false);
     }
 
-    void UpdateWheelPose(WheelCollider collider, Transform mesh)
+    void SyncWheelMesh(WheelCollider collider, Transform mesh, bool isLeftWheel)
     {
-        if (mesh == null) return;
+        if (collider == null || mesh == null) return;
 
-        Vector3 pos;
-        Quaternion rot;
-        collider.GetWorldPose(out pos, out rot);
+        collider.GetWorldPose(out Vector3 pos, out Quaternion rot);
+        
+        Vector3 directionOffset = colliderPositionOffset;
+        if (!isLeftWheel) directionOffset.x = -directionOffset.x;
 
-        mesh.position = pos;
-        mesh.rotation = rot;
+        Vector3 finalPosition = pos + (rot * meshPositionOffset) + (transform.TransformDirection(directionOffset));
+        Quaternion finalRotation = rot * Quaternion.Euler(meshRotationOffset);
+
+        mesh.SetPositionAndRotation(finalPosition, finalRotation);
+        mesh.localScale = Vector3.one; 
+    }
+
+    void UpdateCarBodyHeight()
+    {
+        if (carPartsToRaise == null || originalBodyLocalPositions == null) return;
+
+        for (int i = 0; i < carPartsToRaise.Length; i++)
+        {
+            if (carPartsToRaise[i] != null && i < originalBodyLocalPositions.Length)
+            {
+                Vector3 targetLocalPos = originalBodyLocalPositions[i];
+                targetLocalPos.y += carBodyHeightOffset;
+                carPartsToRaise[i].localPosition = targetLocalPos;
+            }
+        }
     }
 }
