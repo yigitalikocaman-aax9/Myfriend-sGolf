@@ -1,0 +1,14 @@
+name: Build Unity iOS
+on: [push]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Unity
+        uses: game-ci/unity-builder@v4
+        with:
+          targetPlatform: iOS
+          projectPath: .
