@@ -12,3 +12,5 @@ jobs:
         with:
           targetPlatform: iOS
           projectPath: .
+          unityVersion: auto
+          license: '{"email":"example@email.com","password":"password","serial":"personal"}'
